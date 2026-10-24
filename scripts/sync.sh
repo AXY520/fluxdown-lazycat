@@ -21,13 +21,31 @@ DRY_RUN="${DRY_RUN:-0}"
 log() { printf '\033[1;34m[sync]\033[0m %s\n' "$*" >&2; }
 die() { log "失败: $*"; exit 1; }
 
+API_URL="https://api.github.com/repos/$UPSTREAM_REPO/releases/latest"
+fetch_release() {
+  local auth=()
+  [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  if curl -fsS --retry 2 --retry-all-errors --retry-delay 2 "${auth[@]}" \
+    -H "Accept: application/vnd.github+json" -o "$RELEASE_JSON" "$API_URL"; then
+    return 0
+  fi
+  # 本地网络兜底：部分路由器把 GitHub 域名改写到加速/假 IP，偶发黑洞；
+  # 用公共 DNS 拿真实 IP 直连（CI 网络干净，不会走到这一步）。
+  if command -v dig >/dev/null 2>&1; then
+    local ip
+    ip="$(dig +short +time=3 +tries=1 api.github.com @223.5.5.5 2>/dev/null | grep -E '^[0-9]+\.' | tail -1 || true)"
+    if [ -n "$ip" ]; then
+      curl -fsS --retry 3 --retry-all-errors --retry-delay 2 "${auth[@]}" \
+        -H "Accept: application/vnd.github+json" \
+        --resolve "api.github.com:443:$ip" -o "$RELEASE_JSON" "$API_URL" && return 0
+    fi
+  fi
+  return 1
+}
+
 # ── 1. 上游最新稳定 release ──
 log "查询 $UPSTREAM_REPO 最新 release"
-curl -fsS --retry 3 --retry-delay 2 \
-  ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/$UPSTREAM_REPO/releases/latest" > "$RELEASE_JSON" \
-  || die "GitHub API 请求失败"
+fetch_release || die "GitHub API 请求失败"
 
 # ── 2. 计划 ──
 PLAN="$(python3 "$ROOT/scripts/plan.py" "$STATE" "$RELEASE_JSON" "$FORCE")" || die "计划解析失败"
@@ -70,6 +88,7 @@ log "校验 $IMAGE_REPO:$VERSION 存在"
 GHCR_TOKEN="$(curl -fsS "https://ghcr.io/token?scope=repository:${IMAGE_REPO#*/}:pull&service=ghcr.io" \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')" || die "ghcr token 获取失败"
 curl -fsS -o /dev/null -H "Authorization: Bearer $GHCR_TOKEN" \
+  -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
   "https://ghcr.io/v2/${IMAGE_REPO#*/}/manifests/$VERSION" \
   || die "镜像 $IMAGE_REPO:$VERSION 不存在（上游 docker 构建未完成？）"
 
