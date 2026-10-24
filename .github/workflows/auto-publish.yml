@@ -1,0 +1,49 @@
+name: lazycat-store-publish
+
+on:
+  schedule:
+    # 每 6 小时检查一次上游 release（分钟值错开整点）
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "即使已见过最新 release 也强制重新构建并发布（用于补发）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # 发布后把版本状态提交回仓库
+
+concurrency:
+  group: lazycat-store-publish
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install lzc-cli
+        run: npm install -g @lazycatcloud/lzc-cli
+
+      - name: Sync upstream release and publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LAZYCAT_APPSTORE_USER: ${{ secrets.LAZYCAT_APPSTORE_USER }}
+          LAZYCAT_APPSTORE_PASS: ${{ secrets.LAZYCAT_APPSTORE_PASS }}
+          FORCE: ${{ inputs.force && '1' || '0' }}
+        run: scripts/sync.sh
+
+      - name: Upload lpk artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lpk-${{ github.run_id }}
+          path: "*.lpk"
+          if-no-files-found: ignore

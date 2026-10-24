@@ -1,0 +1,27 @@
+package: cloud.lazycat.app.fluxdown
+version: 0.6.2
+name: FluxDown
+description: 多协议下载管理器 - Rust 驱动的高速下载引擎，支持 HTTP/HTTPS/FTP/BitTorrent/Magnet/ED2K/HLS
+author: zerx-lab
+license: AGPL-3.0
+homepage: https://fluxdown.com
+
+min_os_version: 1.5.2
+
+locales:
+  zh:
+    name: FluxDown
+    description: 多协议下载管理器。Rust 驱动的高速下载引擎，支持 HTTP/HTTPS/FTP/BitTorrent/Magnet/ED2K/HLS，内置 Web UI 管理界面。
+  en:
+    name: FluxDown
+    description: Multi-protocol download manager. Rust-powered download engine supporting HTTP/HTTPS/FTP/BitTorrent/Magnet/ED2K/HLS with built-in Web UI.
+
+permissions:
+  required:
+    - net.internet
+    - document.private
+    - lzcapp.self_delegate
+
+import_resources:
+  - kind: skills
+  - kind: mcp-providers

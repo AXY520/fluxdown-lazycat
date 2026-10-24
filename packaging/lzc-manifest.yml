@@ -1,0 +1,70 @@
+application:
+  subdomain: fluxdown
+  multi_instance: false
+  public_path:
+    - /
+  upstreams:
+    - location: /
+      backend: http://host.lzcapp:17800
+      disable_trim_location: true
+      fix_websocket_header: true
+  file_handler:
+    mime:
+      - application/x-bittorrent
+    actions:
+      # Web SPA（v0.5.0 重写后）不消费 ?file= 参数，仅打开应用根页；
+      # 用户在「新建下载」里经 lzc 文件选择器注入挑选种子文件。
+      open: /
+  injects:
+    - id: fluxdown-inject-token
+      "on": request
+      when:
+        - /api/*
+        - /mcp
+        - /jsonrpc
+      do: |
+        ctx.headers.set("X-FluxDown-Token", "lazycat2026");
+    - id: fluxdown-login-autofill
+      when:
+        - /login
+        - /
+      do:
+        - src: builtin://simple-inject-password
+          params:
+            password: "lazycat2026"
+            passwordSelector: "#access-key"
+            allowPasswordOnly: true
+            requireUser: false
+            autoSubmit: true
+            retryCount: 20
+            retryIntervalMs: 300
+    - id: fluxdown-file-chooser
+      when:
+        - /*
+      do:
+        - src: file:///lzcapp/pkg/content/lazycat-injects/lzc-file-chooser-inject.js
+          params:
+            diskRoot: /_lzc/files/home
+            hooks:
+              fileSystemAccess: true
+              fileInput: true
+
+services:
+
+  fluxdown:
+    image: embed:fluxdown
+    network_mode: host
+    binds:
+      - /lzcapp/var/data:/lzcapp/var/data
+    environment:
+      FLUXDOWN_BIND: 0.0.0.0:17800
+      FLUXDOWN_DATA_DIR: /lzcapp/var/data
+      FLUXDOWN_LANG: zh-CN
+      FLUXDOWN_TOKEN: lazycat2026
+      HOME: /lzcapp/document
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:17800/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
