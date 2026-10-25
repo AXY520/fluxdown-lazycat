@@ -9,7 +9,7 @@ images:
     # 0.5.0 起镜像运行时层已自带 curl / xz-utils / tini（docker/server.Dockerfile），
     # 不再需要 apt 补装层。
     dockerfile-content: |
-      FROM ghcr.io/zerx-lab/fluxdown-server:0.6.2
+      FROM ghcr.io/zerx-lab/fluxdown-server:0.6.3
 resource_exports:
   - kind: skills
     source: ./resources/skills
