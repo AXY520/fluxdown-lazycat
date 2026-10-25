@@ -1,3 +1,4 @@
 *.lpk
 .lzc-cli-*
 node_modules/
+logs-*.txt

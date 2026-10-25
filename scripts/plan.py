@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""解析上游 release 与本地状态，产出同步计划（key=value 行，供 sync.sh 消费）。
+"""解析上游 release 与应用状态，产出同步计划（key=value 行，供 sync.sh 消费）。
 
 用法: plan.py <state.json> <release.json> <force 0|1>
+
+配置经环境变量读入（由 sync.sh source apps/<app>/app.env 后导出）：
+  MARKER_BEGIN     release 首行标记前缀（空 = 不做组件门控，全文做更新日志）
+  GATE_COMPONENT   必须出现在 components= 里的组件名（空 = 只要求 docker=ok）
+  LANG_MARKER_ZH/EN 双语更新日志分段标记（空 = 全文做中文更新日志）
 
 输出（stdout，每行 key=value）:
   action=skip       无有效稳定 release，不做任何事
   action=uptodate   最新 tag 与 lastSeenTag 相同且未 force
-  action=seen_only  release 标记不含 server 组件（无新镜像），只记录状态
+  action=seen_only  release 不含门控组件 / docker≠ok（无新镜像），只记录状态
   action=publish    进入发布流程（同时写 /tmp/changelog.{zh,en}.md）
-其余键: tag / version / server_changed / marker
+其余键: tag / version / changelog_zh / changelog_en
 """
 
 import json
+import os
 import pathlib
 import re
 import sys
@@ -21,22 +27,22 @@ def emit(*pairs):
     print("\n".join(f"{k}={v}" for k, v in pairs))
 
 
+def clean(text: str, drop_leading_version_heading: bool) -> str:
+    """标题降为纯文本；drop_leading_version_heading 去掉首个「## x.y.z - 日期」标题行。"""
+    lines = text.strip().splitlines()
+    if drop_leading_version_heading and lines and re.match(r"^## [\w.\-]+\b", lines[0]):
+        lines = lines[1:]
+    out = [re.sub(r"^#{1,6}\s*", "", ln) for ln in lines]
+    return "\n".join(out).strip()[:2000]
+
+
 def section(body: str, start: str, end: str) -> str:
     i = body.find(start)
     if i < 0:
         return ""
     i += len(start)
     j = body.find(end, i) if end else -1
-    text = body[i:] if j < 0 else body[i:j]
-    lines = text.strip().splitlines()
-    # 去掉首个 “## <version> - <date>” 标题行（版本号由 -c/--clangs 元数据承载）
-    if lines and lines[0].startswith("## "):
-        lines = lines[1:]
-    out = []
-    for ln in lines:
-        ln = re.sub(r"^#{1,6}\s*", "", ln)  # 标题降为纯文本
-        out.append(ln)
-    return "\n".join(out).strip()[:2000]
+    return clean(body[i:] if j < 0 else body[i:j], drop_leading_version_heading=True)
 
 
 def main() -> None:
@@ -55,26 +61,33 @@ def main() -> None:
         return
 
     body = rel.get("body") or ""
-    m = re.search(r"fluxdown:release:begin\s+components=([\w,\-]+)[^\>]*?docker=(\w+)", body)
-    if m:
-        server_changed = "server" in m.group(1).split(",")
-        docker_ok = m.group(2) == "ok"
-        marker = "1"
-    else:
-        # 没有 release 标记（老格式/手写），不据此跳过，交给镜像存在性检查兜底
-        server_changed, docker_ok, marker = True, True, "0"
+    marker = os.environ.get("MARKER_BEGIN", "")
+    gate = os.environ.get("GATE_COMPONENT", "")
 
-    if not (server_changed and docker_ok):
-        emit(("action", "seen_only"), ("tag", tag), ("version", version),
-             ("server_changed", "0"), ("marker", marker))
-        return
+    gated = False
+    if marker:
+        line = next((l for l in body.splitlines() if marker in l), "")
+        m = re.search(r"components=([\w,\-]+).*?docker=(\w+)", line)
+        if m:
+            gated = True
+            comps = m.group(1).split(",")
+            docker_ok = m.group(2) == "ok"
+            if (gate and gate not in comps) or not docker_ok:
+                emit(("action", "seen_only"), ("tag", tag), ("version", version))
+                return
+        # 标记缺失（老格式/手写 release）：不据此跳过，保守发布
 
-    zh = section(body, "<!-- fluxdown:lang:zh -->", "<!-- fluxdown:lang:en -->")
-    en = section(body, "<!-- fluxdown:lang:en -->", "")
+    zh_m = os.environ.get("LANG_MARKER_ZH", "")
+    en_m = os.environ.get("LANG_MARKER_EN", "")
+    zh = section(body, zh_m, en_m) if zh_m else ""
+    en = section(body, en_m, "") if en_m else ""
+    if not zh:
+        zh = clean(body, drop_leading_version_heading=False)
+    if not en:
+        en = zh
     pathlib.Path("/tmp/changelog.zh.md").write_text(zh or f"{version} 更新")
-    pathlib.Path("/tmp/changelog.en.md").write_text(en or zh or f"{version} update")
-    emit(("action", "publish"), ("tag", tag), ("version", version),
-         ("server_changed", "1"), ("marker", marker),
+    pathlib.Path("/tmp/changelog.en.md").write_text(en or f"{version} update")
+    emit(("action", "publish"), ("tag", tag), ("version", version), ("gated", "1" if gated else "0"),
          ("changelog_zh", "/tmp/changelog.zh.md"), ("changelog_en", "/tmp/changelog.en.md"))
 
 

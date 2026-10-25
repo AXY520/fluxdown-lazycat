@@ -2,17 +2,21 @@ name: lazycat-store-publish
 
 on:
   schedule:
-    # 每 6 小时检查一次上游 release（分钟值错开整点）
+    # 每 6 小时检查一次各应用上游 release（分钟值错开整点）
     - cron: "23 */6 * * *"
   workflow_dispatch:
     inputs:
+      app:
+        description: "应用名（all = 全部）"
+        type: string
+        default: "all"
       force:
-        description: "即使已见过最新 release 也强制重新构建并发布（用于补发）"
+        description: "强制重走发布流程（补发）"
         type: boolean
         default: false
 
 permissions:
-  contents: write # 发布后把版本状态提交回仓库
+  contents: write # 发布后把各应用状态提交回仓库
 
 concurrency:
   group: lazycat-store-publish
@@ -21,7 +25,13 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      LAZYCAT_APPSTORE_USER: ${{ secrets.LAZYCAT_APPSTORE_USER }}
+      LAZYCAT_APPSTORE_PASS: ${{ secrets.LAZYCAT_APPSTORE_PASS }}
+      FORCE: ${{ inputs.force && '1' || '0' }}
+      SELECTED_APP: ${{ inputs.app || 'all' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,18 +42,30 @@ jobs:
       - name: Install lzc-cli
         run: npm install -g @lazycatcloud/lzc-cli
 
-      - name: Sync upstream release and publish
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          LAZYCAT_APPSTORE_USER: ${{ secrets.LAZYCAT_APPSTORE_USER }}
-          LAZYCAT_APPSTORE_PASS: ${{ secrets.LAZYCAT_APPSTORE_PASS }}
-          FORCE: ${{ inputs.force && '1' || '0' }}
-        run: scripts/sync.sh
+      - name: Sync apps
+        run: |
+          set -o pipefail
+          echo "| 应用 | 结果 | 说明 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          for d in apps/*/; do
+            app="$(basename "$d")"
+            if [ "$SELECTED_APP" != all ] && [ "$SELECTED_APP" != "$app" ]; then continue; fi
+            log="logs-$app.txt"
+            if scripts/sync.sh "$app" 2>&1 | tee "$log"; then
+              st="✅"
+            else
+              st="❌"; fail=1
+            fi
+            note="$(grep -oE 'RESULT: .*' "$log" | tail -1 | sed 's/^RESULT: //' | cut -c1-120 | sed 's/|/∣/g')"
+            echo "| $app | $st | ${note:--} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$fail"
 
-      - name: Upload lpk artifact
+      - name: Upload lpk artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lpk-${{ github.run_id }}
-          path: "*.lpk"
+          path: "apps/*/*.lpk"
           if-no-files-found: ignore

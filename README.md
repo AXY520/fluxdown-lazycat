@@ -1,65 +1,78 @@
-# fluxdown-lazycat
+# lazycat-autopublish
 
-[FluxDown](https://github.com/zerx-lab/FluxDown) → 懒猫微服应用商店的**自动发布流水线**。
+无上游仓库权限应用的**懒猫微服商店自动发布合集**：每个应用一个 `apps/<应用名>/` 目录，
+共享一套脚本与定时任务，自动跟进上游 GitHub release → 更新打包配置 → 构建 lpk → 冒烟 →
+提交商店审核 → 状态落盘。
 
-本仓库是 FluxDown 懒猫 LPK 打包配置的**唯一事实源**（`packaging/` 目录）；上游每次发布含
-server 组件的稳定版，这里自动完成：版本检测 → 配置更新 → lpk 构建 → 冒烟 → 商店提交 → 状态落盘。
+## 应用索引
+
+| 应用 | 上游 | 商店包 id | 说明 |
+|---|---|---|---|
+| [fluxdown](apps/fluxdown) | [zerx-lab/FluxDown](https://github.com/zerx-lab/FluxDown) | `cloud.lazycat.app.fluxdown` | 多协议下载管理器（全内嵌 `ghcr.io/zerx-lab/fluxdown-server` 镜像，amd64） |
+
+## 流水线（每 6 小时，或手动 dispatch）
 
 ```
-上游 release（zerx-lab/FluxDown，含 server 组件）
-        │  每 6 小时轮询 / 手动 dispatch
-        ▼
-scripts/sync.sh
-  ├─ plan.py           解析 release 标记（components / docker / 双语 changelog）
-  ├─ ghcr 镜像校验      ghcr.io/zerx-lab/fluxdown-server:<版本> 必须已推送
-  ├─ lzc-cli build     packaging/ 构建 lpk（builder: local，全内嵌镜像，amd64）
-  ├─ lpk lint          商店上架要求检查
-  ├─ 冒烟              容器探活 /ping 版本匹配 + 登录自动填充选择器 access-key 存在
-  ├─ appstore publish  双语更新日志（--clangs zh/en），提交审核
-  └─ state.json        lastSeenTag / publishedVersion 提交回仓库
+上游 release（releases/latest，draft / prerelease 忽略）
+  ├─ plan.py             组件门控（MARKER_BEGIN 标记的 components 里须含 GATE_COMPONENT
+  │                      且 docker=ok，否则只记状态不发布）+ 双语更新日志提取
+  ├─ docker pull         IMAGE_REPO:<版本>（= 存在性校验 + 本地构建依赖）
+  ├─ sed 落版本号        apps/<应用>/packaging/{package.yml,lzc-build.yml}
+  ├─ lzc-cli build       builder: local，lpk 全内嵌镜像（CI 无 lzc-cli 远端构建依赖）
+  ├─ lpk lint            商店上架要求检查
+  ├─ smoke.sh            应用自定义冒烟（apps/<应用>/smoke.sh，可选）
+  ├─ appstore publish    --clangs zh/en 双语更新日志；「版本已存在」自动视为已发布
+  └─ state.json          lastSeenTag / publishedVersion 提交回仓库（失败下轮重试）
 ```
 
-## 状态文件
+多应用**顺序执行**（避免状态提交互相冲突），单应用失败不拖累其他，Run Summary 里有结果表；
+lpk 留档 artifact。
 
-| 字段 | 含义 |
-|---|---|
-| `lastSeenTag` | 已处理过的最新上游 tag（含「无 server 变更、跳过」的版本） |
-| `publishedVersion` | 商店已提交的版本 |
+## 目录结构
 
-跳过逻辑：最新 release 的标记 `components=` 不含 `server` 或 `docker≠ok` → 只记录
-`lastSeenTag`，不发布（纯客户端版本无新镜像可打包）。镜像 tag 缺失则本轮失败，下轮重试。
+```
+apps/<应用名>/
+├── app.env       # bash 片段：UPSTREAM_REPO / PKG_ID 必填；IMAGE_REPO、
+│                 # MARKER_BEGIN、GATE_COMPONENT、LANG_MARKER_ZH/EN 可选
+├── packaging/    # lzc-build.yml / lzc-manifest.yml / package.yml / content / resources
+├── smoke.sh      # 可选冒烟脚本，参数：<镜像引用> <版本号>（IMAGE_REPO 非空才调用）
+└── state.json    # {"lastSeenTag": "vX.Y.Z", "publishedVersion": "X.Y.Z", ...}
+```
 
-## Secrets（仓库 Settings → Secrets and variables → Actions）
+## 新增一个应用
+
+1. `mkdir apps/<应用名> && cp -r apps/fluxdown/{app.env,packaging,state.json} apps/<应用名>/`
+2. 改 `app.env`（上游仓库、包 id、镜像、release 标记约定），换成该应用的 `packaging/` 打包配置，
+   重写（或删掉）`smoke.sh`
+3. `state.json` 的 `lastSeenTag` 初始化为**商店里已发布的最后一个版本**对应的上游 tag（留空则
+   首轮直接发布最新版）
+4. 本地演练：`FORCE=1 DRY_RUN=1 scripts/sync.sh <应用名>`
+5. 提交推送即可 —— workflow 自动遍历 `apps/*/`，无需改任何公共文件
+
+## Secrets（仓库级，全应用共享）
 
 | 名称 | 值 |
 |---|---|
-| `LAZYCAT_APPSTORE_USER` | 懒猫应用商店账号（手机号） |
+| `LAZYCAT_APPSTORE_USER` | 懒猫应用商店账号 |
 | `LAZYCAT_APPSTORE_PASS` | 懒猫应用商店密码 |
 
 ## 手动操作
 
 ```bash
 # 本地全流程演练（构建+冒烟，不发布、不落状态）
-FORCE=1 DRY_RUN=1 scripts/sync.sh
+FORCE=1 DRY_RUN=1 scripts/sync.sh <应用名>
 
-# GitHub 上手动触发（Actions → lazycat-store-publish → Run workflow，勾选 force 可补发当前最新版）
-# 仓库 Secrets 配置：
-gh secret set LAZYCAT_APPSTORE_USER -R <owner>/fluxdown-lazycat -b "..."
-gh secret set LAZYCAT_APPSTORE_PASS -R <owner>/fluxdown-lazycat -b "..."
+# GitHub 手动触发：Actions → lazycat-store-publish → Run workflow
+#   app  = all / 单个应用名
+#   force = 强制重走发布（补发）
 ```
 
-## 维护须知
+## 注意事项
 
-- **登录自动填充选择器**：`packaging/lzc-manifest.yml` 注入依赖 Web SPA 的 `#access-key`
-  输入框 id。冒烟检查会 grep 镜像内二进制确认字符串仍在，但 SPA 重写后请人工开一次页面确认。
-- **API 文档 Skill**：`packaging/resources/skills/fluxdown/SKILL.md` 描述 MCP / aria2 / REST
-  接口，随版本演进需人工同步更新。
-- **架构**：lpk 全内嵌 `linux/amd64`（与历史上架版本一致；懒猫盒子以 x86 为主）。
-- **商店审核是人工的**：本流水线自动「提交审核」，不是自动上架；发版过密会占审核队列。
-- **计划任务休眠**：公开/私有仓库 60 天无提交时 GitHub 会停用 schedule；跑一次
-  dispatch（任意提交）即可恢复。
-- 发布失败的兜底：状态未落盘 → 下轮重试；若商店已收包，会命中「版本已存在」分支自动补记状态。
-
-## 许可
-
-FluxDown 为 AGPL-3.0；本仓库仅包含其打包配置与流水线脚本。
+- **商店审核是人工的**：本流水线自动「提交审核」，不是自动上架。
+- **门控组件发布**：release 标记缺 `GATE_COMPONENT`（如 `server`）或 `docker≠ok` → 只记状态
+  不发布（无新镜像可打包）。没有标记约定的应用，不设 `MARKER_BEGIN` 即可（全文做更新日志）。
+- **计划任务休眠**：60 天无提交时 GitHub 会停用 schedule；跑一次 dispatch 即恢复。
+- **发布失败兜底**：状态未落盘 → 下轮重试；商店已收包时命中「版本已存在」分支自动补记状态。
+- **本地网络兼容**：脚本内置「公共 DNS 拿真实 IP 直连」兜底（部分路由器会改写 GitHub 域名
+  导致偶发黑洞；CI 网络干净，不会走到这一步）。
