@@ -83,14 +83,10 @@ publish) ;;
 *) die "未知计划 $ACTION" ;;
 esac
 
-# ── 3. 镜像 tag 存在性（上游 docker 未发布则本轮终止，下轮重试） ──
-log "校验 $IMAGE_REPO:$VERSION 存在"
-GHCR_TOKEN="$(curl -fsS "https://ghcr.io/token?scope=repository:${IMAGE_REPO#*/}:pull&service=ghcr.io" \
-  | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')" || die "ghcr token 获取失败"
-curl -fsS -o /dev/null -H "Authorization: Bearer $GHCR_TOKEN" \
-  -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-  "https://ghcr.io/v2/${IMAGE_REPO#*/}/manifests/$VERSION" \
-  || die "镜像 $IMAGE_REPO:$VERSION 不存在（上游 docker 构建未完成？）"
+# ── 3. 镜像拉取（存在性校验 + 本地构建依赖；上游 docker 未发布则本轮终止，下轮重试） ──
+log "拉取 $IMAGE_REPO:$VERSION"
+docker pull -q "$IMAGE_REPO:$VERSION" >/dev/null \
+  || die "镜像 $IMAGE_REPO:$VERSION 拉取失败（上游 docker 构建未完成？）"
 
 # ── 4. 版本落盘 ──
 log "更新 packaging 配置到 $VERSION"
@@ -107,7 +103,6 @@ lzc-cli lpk lint "$LPK" || die "lpk lint 未通过（商店上架要求检查）
 
 # ── 6. 冒烟：镜像能起、版本正确、登录自动填充选择器仍在 ──
 log "冒烟检查 $IMAGE_REPO:$VERSION"
-docker pull -q "$IMAGE_REPO:$VERSION" >/dev/null
 docker run --rm --entrypoint sh "$IMAGE_REPO:$VERSION" \
   -c 'grep -aq access-key /app/fluxdown-agent' \
   || die "冒烟失败：二进制内找不到 access-key（Web 登录自动填充选择器可能已变，需人工核对 lzc-manifest.yml 注入）"
