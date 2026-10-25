@@ -1,0 +1,23 @@
+package: cloud.lazycat.app.ipadown
+version: 0.6.23
+name: ipaDown
+description: 登录 Apple ID 下载 App Store 历史版本 IPA，在 Safari 中直接安装
+author: axy
+license: MIT
+homepage: https://github.com/axy/ipadown
+unsupported_platforms:
+  - android
+  - linux
+  - windows
+  - macos
+  - tvos
+locales:
+  en:
+    name: ipaDown
+    description: Download historical App Store IPA versions with an Apple ID and install them directly in Safari
+  zh-CN:
+    name: ipaDown
+    description: 登录 Apple ID 下载 App Store 历史版本 IPA，在 Safari 中直接安装
+permissions:
+  required:
+    - net.internet

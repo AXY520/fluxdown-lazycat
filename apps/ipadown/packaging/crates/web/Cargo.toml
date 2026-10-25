@@ -1,0 +1,23 @@
+[package]
+name = "ipadown-web"
+description = "ipadown Web 服务：账号/搜索/历史版本/下载/Safari 安装"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ipadown-web"
+path = "src/main.rs"
+
+[dependencies]
+ipadown-store = { path = "../store" }
+ipadown-ota = { path = "../ota" }
+axum = "0.8"
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "fs", "net", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.3"
+base64 = "0.22"
+fs2 = "0.4"

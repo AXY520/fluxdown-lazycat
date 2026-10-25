@@ -1,0 +1,6 @@
+images:
+  app:
+    dockerfile: Dockerfile
+    context: .
+icon: crates/web/static/icon.png
+pkgout: .

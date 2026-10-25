@@ -1,0 +1,7 @@
+params:
+  - id: https_proxy
+    type: string
+    name: "HTTPS 代理（可选）"
+    description: "苹果服务器连接被重置时填写，如 http://192.168.31.1:7890（可填盒子所在网络的代理地址）；留空不使用代理"
+    optional: true
+    default_value: ""

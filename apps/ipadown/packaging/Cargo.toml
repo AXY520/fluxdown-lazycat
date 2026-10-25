@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/store", "crates/ota", "crates/web"]
+
+[workspace.package]
+version = "0.6.23"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+strip = true
+lto = true

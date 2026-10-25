@@ -1,0 +1,23 @@
+[package]
+name = "ipadown-store"
+description = "ipadown 商店层：App Store 搜索、ipatool 任务封装与 IPA 元数据"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "system-proxy", "rustls-tls-native-roots"] }
+plist = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "process", "time"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+directories = "5"
+getrandom = "0.3"
+aes = "0.8"
+aes-gcm = "0.10"
+aes-kw = { version = "0.2", features = ["alloc"] }
+pbkdf2 = "0.12"
+sha2 = "0.10"
+base64 = "0.22"

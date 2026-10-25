@@ -1,0 +1,20 @@
+services:
+  ipadown:
+    build: .
+    container_name: ipadown
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      # 必填：对外受信 HTTPS 地址（Safari 安装依赖 itms-services 的 HTTPS 要求）
+      - PUBLIC_BASE_URL=https://ipa.example.com
+      # 建议设置：Web/API Basic Auth 密码
+      - IPADOWN_WEB_PASSWORD=${IPADOWN_WEB_PASSWORD:-}
+      # - IPADOWN_WEB_USERNAME=ipadown
+      # 可选：主服务端口（默认 8080）
+      # - PORT=8080
+      # 可选：访问苹果服务器被重置时配置代理（容器内 ipatool 与搜索均生效）
+      # - HTTPS_PROXY=http://192.168.1.1:7890
+      # - https_proxy=http://192.168.1.1:7890

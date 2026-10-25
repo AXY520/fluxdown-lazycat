@@ -1,0 +1,20 @@
+usage: |
+  本应用仅支持 Safari 浏览器访问。请复制应用地址，使用 iPhone 或 iPad 的 Safari 打开，下载完成后点击“安装”。
+application:
+  subdomain: ipadown
+  multi_instance: true
+  image: embed:app
+  routes:
+    - /=exec://8080,/usr/local/bin/ipadown-web
+  # /ota/** 供 iPhone Safari/系统直接拉取 manifest 与 IPA，不走微服登录跳转
+  public_path:
+    - /ota/
+  environment:
+    IPADOWN_DATA_DIR: /lzcapp/var
+    PORT: "8080"
+    # Web/API 由懒猫应用网关鉴权；每位用户运行独立实例并拥有独立 /lzcapp/var。
+    IPADOWN_PLATFORM_AUTH: "1"
+    # .S.AppDomain 为懒猫渲染变量，自动展开为应用完整域名（如 ipadown.<微服名>.heiyu.space）
+    PUBLIC_BASE_URL: "https://{{ .S.AppDomain }}"
+    {{ if .U.https_proxy }}HTTPS_PROXY: "{{ .U.https_proxy }}"{{ end }}
+    {{ if .U.https_proxy }}https_proxy: "{{ .U.https_proxy }}"{{ end }}

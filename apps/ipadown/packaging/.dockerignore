@@ -1,0 +1,8 @@
+target
+research
+*.ipa
+*.lpk
+data
+.git
+.lzc-cli-cache
+.lzc-cli-build*

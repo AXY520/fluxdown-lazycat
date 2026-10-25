@@ -1,0 +1,8 @@
+[package]
+name = "ipadown-ota"
+description = "浏览器 OTA 安装：manifest.plist + itms-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
