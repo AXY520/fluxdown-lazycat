@@ -90,6 +90,29 @@ pub async fn lookup(bundle_id: &str, country: &str, platform: DevicePlatform) ->
         .ok_or_else(|| StoreError::UnexpectedResponse(format!("未找到应用 {bundle_id}")))
 }
 
+/// 按 App Store ID（trackId）查找（ipatool 降级路径：list-versions 需要 bundle_id）
+pub async fn lookup_by_id(app_id: i64, country: &str) -> Result<Software> {
+    let client = client_follow()?;
+    let resp: SearchResponse = client
+        .get("https://itunes.apple.com/lookup")
+        .query(&[
+            ("id", app_id.to_string()),
+            ("country", country.to_string()),
+            ("entity", "software".to_string()),
+            ("limit", "1".to_string()),
+            ("media", "software".to_string()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    resp.results
+        .into_iter()
+        .next()
+        .ok_or_else(|| StoreError::UnexpectedResponse(format!("未找到应用 id{app_id}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DevicePlatform, SearchResponse};

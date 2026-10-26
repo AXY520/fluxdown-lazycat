@@ -344,33 +344,137 @@ fn attach_release_notes(catalog: &mut VersionCatalog, mut notes: HashMap<String,
 
 /// 爱果提供下载所需的历史版本 ID，App Store 提供官方更新日志。
 /// 仅发送公开的 App Store ID 与国家代码，不发送登录信息。
+/// `fallback`：爱果不可用时用登录账号的 ipatool list-versions 降级
+/// （仅版本 ID，无日期/体积；需已登录，未登录则原样报错）。
 pub async fn versions(app_id: i64, country: &str) -> Result<VersionCatalog> {
+    versions_with_fallback(app_id, country, crate::search::DevicePlatform::Iphone, None).await
+}
+
+pub async fn versions_with_fallback(
+    app_id: i64,
+    country: &str,
+    platform: crate::search::DevicePlatform,
+    fallback: Option<&crate::ipatool::Ipatool>,
+) -> Result<VersionCatalog> {
     let country = validate_input(app_id, country)?;
     let (catalog, release_notes) = tokio::join!(
         agzy_versions(app_id, &country),
         app_store_release_notes(app_id, &country)
     );
-    let mut catalog = catalog?;
-    match release_notes {
-        Ok(notes) => {
-            let attached = notes.len();
-            attach_release_notes(&mut catalog, notes);
-            crate::log_info!(
-                "history",
-                "catalog fetched app_id={app_id} country={} versions={} notes={attached}",
-                country.to_ascii_uppercase(),
-                catalog.versions.len()
-            );
+    match catalog {
+        Ok(mut catalog) => {
+            match release_notes {
+                Ok(notes) => {
+                    let attached = notes.len();
+                    attach_release_notes(&mut catalog, notes);
+                    crate::log_info!(
+                        "history",
+                        "catalog fetched app_id={app_id} country={} versions={} notes={attached}",
+                        country.to_ascii_uppercase(),
+                        catalog.versions.len()
+                    );
+                }
+                Err(error) => {
+                    crate::log_warn!(
+                        "history",
+                        "release notes unavailable app_id={app_id} country={} error={error}",
+                        country.to_ascii_uppercase()
+                    );
+                }
+            }
+            Ok(catalog)
         }
-        Err(error) => {
-            crate::log_warn!(
-                "history",
-                "release notes unavailable app_id={app_id} country={} error={error}",
-                country.to_ascii_uppercase()
-            );
+        Err(agzy_error) => {
+            // 降级：爱果故障时用登录账号拉版本列表（与下载接口同源，仅缺日期/体积）
+            if let Some(ipatool) = fallback {
+                crate::log_warn!(
+                    "history",
+                    "agzy unavailable, falling back to ipatool app_id={app_id} error={agzy_error}"
+                );
+                return ipatool_fallback_catalog(
+                    app_id,
+                    &country,
+                    platform,
+                    ipatool,
+                    release_notes.ok(),
+                )
+                .await;
+            }
+            Err(agzy_error)
         }
     }
-    Ok(catalog)
+}
+
+/// ipatool 降级目录：版本 ID 列表 + 搜索结果带的名字/最新版本号。
+/// 字段不全（无发布日期/体积/更新日志），由调用方标注降级来源。
+async fn ipatool_fallback_catalog(
+    app_id: i64,
+    _country: &str,
+    platform: crate::search::DevicePlatform,
+    ipatool: &crate::ipatool::Ipatool,
+    release_notes: Option<HashMap<String, String>>,
+) -> Result<VersionCatalog> {
+    // 先用公开搜索把 bundle_id 摸出来（多区依次尝试），list-versions 需要 bundle_id
+    let mut resolved: Option<crate::Software> = None;
+    for country in ["CN", "US", "JP"] {
+        if let Ok(lookup) = crate::search::lookup_by_id(app_id, country).await {
+            resolved = Some(lookup);
+            break;
+        }
+    }
+    let Some(app) = resolved else {
+        return Err(StoreError::Upstream(
+            "爱果服务不可用，且应用信息获取失败，请稍后重试".into(),
+        ));
+    };
+    let ids = ipatool
+        .list_versions(&app.bundle_id, platform)
+        .await
+        .map_err(|error| {
+            crate::log_warn!("history", "ipatool fallback failed app_id={app_id} error={error}");
+            let text = error.to_string();
+            let message = if text.contains("license is required") {
+                // 付费 App 无法自动 purchase：需用户自己先购买
+                "目录服务降级中，且该账号未拥有此 App：免费 App 请先在手机 App Store「获取」一次，付费 App 需先购买后再试"
+            } else if matches!(error, crate::StoreError::CodeRequired) || text.contains("验证码") {
+                // 自动获取 license 需要新鲜会话：重新登录（会弹 2FA）后即恢复
+                "目录服务降级中，且该账号未拥有此 App：请退出登录后重新登录 Apple ID（完成双重认证）再试"
+            } else {
+                "爱果服务不可用，登录账号拉取版本列表也失败，请稍后重试"
+            };
+            StoreError::Upstream(message.into())
+        })?;
+    let mut versions = ids
+        .into_iter()
+        .map(|version_id| HistoricalVersion {
+            version: String::new(), // 降级模式无展示版本号
+            version_id,
+            size: None,
+            release_date: None,
+            release_notes: None,
+        })
+        .collect::<Vec<_>>();
+    // 最新一个用搜索结果的当前版本号，并尝试匹配 App Store 官方更新日志
+    versions[0].version = app.version.clone();
+    if let Some(notes) = release_notes {
+        if let Some(note) = notes.get(app.version.trim()) {
+            versions[0].release_notes = Some(note.clone());
+        }
+    }
+    crate::log_info!(
+        "history",
+        "catalog via ipatool fallback app_id={app_id} bundle={} versions={} name={}",
+        app.bundle_id,
+        versions.len(),
+        app.name
+    );
+    Ok(VersionCatalog {
+        name: app.name,
+        bundle_id: app.bundle_id,
+        current_version: app.version,
+        updated_at: String::new(),
+        versions,
+    })
 }
 
 #[cfg(test)]

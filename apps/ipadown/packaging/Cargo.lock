@@ -846,11 +846,11 @@ dependencies = [
 
 [[package]]
 name = "ipadown-ota"
-version = "0.6.24"
+version = "0.6.25"
 
 [[package]]
 name = "ipadown-store"
-version = "0.6.24"
+version = "0.6.25"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -871,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "ipadown-web"
-version = "0.6.24"
+version = "0.6.25"
 dependencies = [
  "axum",
  "axum-server",

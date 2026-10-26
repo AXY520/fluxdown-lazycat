@@ -479,22 +479,22 @@ async function showVersions(bundleId,appId,country,platform='iphone') {
     const result = await api(`/api/versions?${query}`);
     if (requestId!==versionRequestId) return;
     const entries=(result.versions || []).map(item => ({...item,id:String(item.version_id)})).sort(compareVersionsNewestFirst);
-    Object.assign(verState,{bundleId,appId,country,platform,app:{...searchApp,...result.app},entries,rendered:0,scrollTop:0}); renderVersions();
+    Object.assign(verState,{bundleId,appId,country,platform,app:{...searchApp,...result.app},entries,rendered:0,scrollTop:0,degraded:!!result.degraded}); renderVersions();
   } catch (error) { if (requestId!==versionRequestId) return; handleAuthErr(error); openModal(`<h3>历史版本</h3><div class="err">❌ ${esc(error.message)}</div>`,true); }
 }
 function renderVersions() {
   stopVersionObserver(); verState.rendered=0;
   openModal(`<div id="version-list-view"><h3>${esc(verState.app.name || '应用')} · 历史版本</h3>
-    <div class="list-summary">${verState.entries.length} 个版本</div>
+    <div class="list-summary">${verState.entries.length} 个版本${verState.degraded ? ' · 仅版本 ID（目录服务降级中）' : ''}</div>
     <div class="version-list" id="version-list"></div><div class="version-sentinel" id="version-sentinel" aria-live="polite"></div></div>
     <div id="version-detail-view" class="hidden"></div>`,true);
   appendVersionBatch();
 }
 function versionItemHtml(entry) {
-  const version=entry.display_version || '版本未知', date=String(entry.release_date || '').slice(0,10) || '日期未知';
+  const version=entry.display_version || (verState.degraded ? '' : '版本未知'), date=String(entry.release_date || '').slice(0,10) || (verState.degraded ? '' : '日期未知');
   return `<button type="button" class="version-item" data-version-id="${esc(entry.id)}" data-act="show-version-detail">
     <span><span class="version-name">${esc(version)}</span><code class="version-id">${esc(entry.id)}</code></span>
-    <span class="version-meta">${esc(date)}${entry.size ? ` · ${esc(entry.size)}` : ''}</span><span class="version-chevron" aria-hidden="true">›</span></button>`;
+    <span class="version-meta">${date ? esc(date) : ''}${entry.size ? `${date ? ' · ' : ''}${esc(entry.size)}` : ''}</span><span class="version-chevron" aria-hidden="true">›</span></button>`;
 }
 function stopVersionObserver() {
   versionObserver?.disconnect(); versionObserver=null;

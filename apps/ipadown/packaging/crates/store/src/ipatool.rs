@@ -251,6 +251,102 @@ impl Ipatool {
             )))
         }
     }
+
+    /// 列出应用可下载的历史版本 ID（与下载接口同源，数据可靠）。
+    /// 爱果目录不可用时的降级数据源：只返回版本 ID，无发布日期/体积。
+    /// 返回最新在前（ipatool 顺序为从旧到新）。
+    /// 账号未拥有该 App 时自动 purchase（免费 App 获取 license）后重试一次。
+    pub async fn list_versions(
+        &self,
+        bundle_id: &str,
+        platform: crate::search::DevicePlatform,
+    ) -> Result<Vec<String>> {
+        let args = [
+            "list-versions",
+            "--bundle-identifier",
+            bundle_id,
+            "--platform",
+            platform.ipatool_value(),
+        ];
+        match self.run(&args).await {
+            Ok(json) => extract_version_ids(&json),
+            Err(StoreError::AuthFailed(msg)) if msg.contains("license is required") => {
+                crate::log_info!(
+                    "ipatool",
+                    "license required, purchasing free app bundle={bundle_id}"
+                );
+                self.run(&[
+                    "purchase",
+                    "--bundle-identifier",
+                    bundle_id,
+                    "--platform",
+                    platform.ipatool_value(),
+                ])
+                .await?;
+                let json = self.run(&args).await?;
+                extract_version_ids(&json)
+            }
+            other => other.and_then(|json| extract_version_ids(&json)),
+        }
+    }
+}
+
+/// 从 list-versions 成功行提取版本 ID 列表（zerolog Interface 字段，json 格式下
+/// 为字符串数组），过滤非法项并倒序（ipatool 从旧到新 → 最新在前）。
+fn extract_version_ids(json: &serde_json::Value) -> Result<Vec<String>> {
+    let Some(ids) = json
+        .get("externalVersionIdentifiers")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                .collect::<Vec<_>>()
+        })
+    else {
+        return Err(StoreError::UnexpectedResponse(
+            "ipatool 未返回版本列表".into(),
+        ));
+    };
+    let mut ids = ids;
+    if ids.is_empty() {
+        return Err(StoreError::UnexpectedResponse(
+            "ipatool 版本列表为空".into(),
+        ));
+    }
+    ids.reverse();
+    Ok(ids)
+}
+
+#[cfg(test)]
+mod list_versions_tests {
+    use super::extract_version_ids;
+
+    #[test]
+    fn extracts_filters_and_reverses_version_ids() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"level":"info","bundleID":"com.tencent.xin","externalVersionIdentifiers":["3328911","3373135","893607403","","x"],"success":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_version_ids(&json).unwrap(),
+            ["893607403", "3373135", "3328911"]
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_empty_identifier_lists() {
+        assert!(extract_version_ids(&serde_json::json!({"success": true})).is_err());
+        assert!(extract_version_ids(&serde_json::json!({
+            "externalVersionIdentifiers": []
+        }))
+        .is_err());
+        assert!(extract_version_ids(&serde_json::json!({
+            "externalVersionIdentifiers": "not-an-array"
+        }))
+        .is_err());
+    }
 }
 
 // ---------- 多账号辅助 ----------

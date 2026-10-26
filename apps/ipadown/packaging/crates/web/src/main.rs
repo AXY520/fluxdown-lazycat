@@ -894,7 +894,14 @@ async fn get_version_catalog(
         return Ok(catalog);
     }
 
-    let catalog = match store::history::versions(query.app_id, &query.country).await {
+    let catalog = match store::history::versions_with_fallback(
+        query.app_id,
+        &query.country,
+        query.platform,
+        fallback_ipatool().as_ref(),
+    )
+    .await
+    {
         Ok(catalog) => catalog,
         Err(error) => {
             store::log_warn!(
@@ -919,15 +926,25 @@ async fn get_version_catalog(
             "历史版本数据与应用不匹配，请稍后重试或反馈".into(),
         )));
     }
+    // 降级目录（updated_at 为空）不入缓存：爱果恢复后应回到完整数据
+    let degraded = catalog.updated_at.is_empty();
     let catalog = Arc::new(catalog);
-    if catalog
-        .versions
-        .iter()
-        .any(|version| version.release_notes.is_some())
+    if !degraded
+        && catalog
+            .versions
+            .iter()
+            .any(|version| version.release_notes.is_some())
     {
         lock_ignore_poison(&state.versions).insert(key, catalog.clone());
     }
     Ok(catalog)
+}
+
+/// 构建用于历史版本降级的 ipatool（当前选中账号；未登录返回 None，降级不生效）
+fn fallback_ipatool() -> Option<store::ipatool::Ipatool> {
+    let cfg = store::config::Config::load_or_create().ok()?;
+    let email = cfg.current_meta()?.email.clone();
+    store::ipatool::Ipatool::for_account(&cfg, &email).ok()
 }
 
 async fn api_versions(State(s): State<AppState>, Query(q): Query<VersionsQuery>) -> Response {
@@ -945,9 +962,10 @@ async fn api_versions(State(s): State<AppState>, Query(q): Query<VersionsQuery>)
                 "size": item.size,
                 "release_notes": item.release_notes,
             })).collect::<Vec<_>>(),
-            "source": "app.agzy.cn",
+            "source": if catalog.updated_at.is_empty() { "ipatool" } else { "app.agzy.cn" },
             "release_notes_source": "apps.apple.com",
             "updated_at": catalog.updated_at,
+            "degraded": catalog.updated_at.is_empty(),
         }))
         .into_response(),
         Err(e) => e,
@@ -1505,6 +1523,9 @@ fn parse_range(raw: &str, len: u64) -> Result<Option<(u64, u64)>, ()> {
 
 #[cfg(test)]
 mod tests {
+    /// 自身源码（结构性断言用，如降级链路的存在性检查）
+    const APP_SRC: &str = include_str!("main.rs");
+
     use super::*;
 
     #[test]
@@ -1728,6 +1749,20 @@ mod tests {
         // 进度轮询改为行内更新，避免滑动手势被重绘打断
         assert!(APP_JS.contains("function buildJobRow("));
         assert!(APP_JS.contains("function updateJobRow("));
+    }
+
+    #[test]
+    fn history_falls_back_to_ipatool_when_agzy_unavailable() {
+        // 后端：降级链路（versions_with_fallback + ipatool list-versions）
+        assert!(APP_SRC.contains("versions_with_fallback"));
+        assert!(APP_SRC.contains("fallback_ipatool"));
+        assert!(APP_SRC.contains("\"degraded\": catalog.updated_at.is_empty()"));
+        assert!(
+            APP_SRC.contains("// 降级目录（updated_at 为空）不入缓存：爱果恢复后应回到完整数据")
+        );
+        // 前端：降级标记与空白字段兼容
+        assert!(APP_JS.contains("仅版本 ID（目录服务降级中）"));
+        assert!(APP_JS.contains("verState.degraded ? '' : '版本未知'"));
     }
 
     #[test]
