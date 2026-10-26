@@ -288,6 +288,49 @@
         background: #f3f4f6;
         outline: none;
       }
+
+      .lzc-open-save-chooser {
+        animation: lzc-open-save-chooser-in 0.16s ease-out;
+      }
+
+      .lzc-open-save-chooser__dialog {
+        animation: lzc-open-save-chooser-dialog-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .lzc-open-save-chooser--closing {
+        animation: lzc-open-save-chooser-out 0.12s ease-in forwards;
+        pointer-events: none;
+      }
+
+      .lzc-file-chooser-host {
+        animation: lzc-open-save-chooser-in 0.15s ease-out;
+      }
+
+      .lzc-file-chooser-host--closing {
+        animation: lzc-open-save-chooser-out 0.12s ease-in forwards;
+      }
+
+      @keyframes lzc-open-save-chooser-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      @keyframes lzc-open-save-chooser-dialog-in {
+        from { opacity: 0; transform: translateY(8px) scale(0.96); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+
+      @keyframes lzc-open-save-chooser-out {
+        to { opacity: 0; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .lzc-open-save-chooser,
+        .lzc-open-save-chooser__dialog,
+        .lzc-file-chooser-host {
+          animation: none;
+        }
+      }
     `;
     document.head.appendChild(style);
   };
@@ -297,7 +340,10 @@
       return;
     }
 
-    STATE.modal.remove();
+    const modal = STATE.modal;
+    modal.classList.add("lzc-open-save-chooser--closing");
+    setTimeout(() => modal.remove(), 120);
+
     STATE.modal = null;
     STATE.modalAbort = null;
     document.removeEventListener("keydown", onModalKeydown, true);
@@ -440,7 +486,10 @@
   const createPicker = async (props = {}) => {
     await waitForLazyCatPicker();
 
+    ensureStyles();
+
     const picker = document.createElement(PICKER_TAG);
+    picker.classList.add("lzc-file-chooser-host");
     for (const [key, value] of Object.entries(props)) {
       setPickerProp(picker, key, value);
     }
@@ -820,7 +869,9 @@
 
     return new Promise((resolve, reject) => {
       const cleanup = () => {
-        picker.remove();
+        picker.classList.add("lzc-file-chooser-host--closing");
+        picker.style.pointerEvents = "none";
+        setTimeout(() => picker.remove(), 130);
       };
 
       picker.addEventListener(
