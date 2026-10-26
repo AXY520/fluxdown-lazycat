@@ -217,6 +217,7 @@
         position: fixed;
         inset: 0;
         z-index: 2147483647;
+        pointer-events: auto;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -446,6 +447,9 @@
     picker.style.position = "fixed";
     picker.style.inset = "0";
     picker.style.zIndex = "2147483647";
+    // Radix 等模态弹窗库打开时会把 body 置为 pointer-events:none；
+    // 挂进 body 的选择器必须显式恢复 auto，否则点击穿透到宿主页面的弹窗。
+    picker.style.pointerEvents = "auto";
     document.body.appendChild(picker);
 
     return picker;
