@@ -894,14 +894,30 @@ async fn get_version_catalog(
         return Ok(catalog);
     }
 
-    let catalog = store::history::versions(query.app_id, &query.country)
-        .await
-        .map_err(store_err)?;
+    let catalog = match store::history::versions(query.app_id, &query.country).await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            store::log_warn!(
+                "history",
+                "versions failed app_id={} bundle={} country={} error={error}",
+                query.app_id,
+                query.bundle_id,
+                query.country
+            );
+            return Err(store_err(error));
+        }
+    };
     if catalog.bundle_id != query.bundle_id {
-        return Err(store_err(store::StoreError::UnexpectedResponse(format!(
-            "爱果返回的 Bundle ID 不匹配：期望 {}，实际 {}",
-            query.bundle_id, catalog.bundle_id
-        ))));
+        store::log_warn!(
+            "history",
+            "bundle mismatch app_id={} expected={} actual={}",
+            query.app_id,
+            query.bundle_id,
+            catalog.bundle_id
+        );
+        return Err(store_err(store::StoreError::UnexpectedResponse(
+            "历史版本数据与应用不匹配，请稍后重试或反馈".into(),
+        )));
     }
     let catalog = Arc::new(catalog);
     if catalog

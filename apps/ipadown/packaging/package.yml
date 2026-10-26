@@ -1,5 +1,5 @@
 package: cloud.lazycat.app.ipadown
-version: 0.6.23
+version: 0.6.24
 name: ipaDown
 description: 登录 Apple ID 下载 App Store 历史版本 IPA，在 Safari 中直接安装
 author: axy

@@ -49,8 +49,23 @@ struct AgzyResponse {
     version: String,
     #[serde(default)]
     time: String,
-    #[serde(default)]
+    /// 上游在错误场景会返回 "data":""（字符串而非数组），宽容解析
+    #[serde(default, deserialize_with = "flexible_versions")]
     data: Vec<AgzyVersion>,
+}
+
+fn flexible_versions<'de, D>(deserializer: D) -> std::result::Result<Vec<AgzyVersion>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::String(_)) => Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items
+            .into_iter()
+            .map(|item| serde_json::from_value(item).map_err(serde::de::Error::custom))
+            .collect(),
+        Some(_) => Err(serde::de::Error::custom("版本数据格式无效")),
+    }
 }
 
 pub struct HistoricalVersion {
@@ -74,15 +89,27 @@ impl TryFrom<AgzyResponse> for VersionCatalog {
 
     fn try_from(response: AgzyResponse) -> Result<Self> {
         if response.code != 200 {
-            return Err(StoreError::UnexpectedResponse(format!(
-                "爱果历史版本接口返回 {}: {}",
-                response.code, response.msg
-            )));
+            let raw_msg = response.msg.as_str();
+            // 201：上游用自己的账号池拉数据，登录失败是他们的故障，与用户无关；
+            // 原始报错（如「登陆失败，请检查账号密码」）易误导用户以为自己的账号有问题。
+            // 用户只看分类后的提示，原始信息进日志。
+            crate::log_warn!(
+                "history",
+                "agzy upstream error code={} msg={}",
+                response.code,
+                raw_msg.trim()
+            );
+            let friendly = if raw_msg.contains("登陆失败") {
+                "历史版本服务暂时不可用，请稍后重试"
+            } else if raw_msg.contains("未增加获取") || raw_msg.contains("暂无数据") {
+                "该应用在此地区暂不支持获取历史版本"
+            } else {
+                "历史版本服务返回异常，请稍后重试"
+            };
+            return Err(StoreError::Upstream(friendly.into()));
         }
         if response.bundle_id.is_empty() || response.data.is_empty() {
-            return Err(StoreError::UnexpectedResponse(
-                "爱果历史版本接口未返回版本记录".into(),
-            ));
+            return Err(StoreError::Upstream("该应用暂无历史版本记录".into()));
         }
         let versions = response
             .data
@@ -128,6 +155,29 @@ fn validate_input(app_id: i64, country: &str) -> Result<String> {
 }
 
 async fn agzy_versions(app_id: i64, country: &str) -> Result<VersionCatalog> {
+    // 上游用账号池拉取数据，单次失败可能只是命中了故障账号，重试通常能碰到可用账号；
+    // 网络抖动同理。最多 3 次，退避递增。
+    let mut last_error = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(600 * attempt as u64)).await;
+        }
+        match agzy_versions_once(app_id, country).await {
+            Ok(catalog) => return Ok(catalog),
+            Err(error) => {
+                crate::log_warn!(
+                    "history",
+                    "agzy attempt {} failed app_id={app_id} error={error}",
+                    attempt + 1
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.expect("至少尝试一次"))
+}
+
+async fn agzy_versions_once(app_id: i64, country: &str) -> Result<VersionCatalog> {
     let response: AgzyResponse = client_follow()?
         .post(AGZY_VERSION_URL)
         .timeout(Duration::from_secs(20))
@@ -407,6 +457,42 @@ mod tests {
         let notes = parse_app_store_release_notes(body).unwrap();
 
         assert_eq!(notes.get("1.2.3").map(String::as_str), Some("Changes"));
+    }
+
+    /// 上游账号池登录失败（2026-10 实际发生）时，用户看到的应是服务侧提示，
+    /// 而不是「登陆失败,请检查账号密码」这类易被误认为是自己 Apple ID 问题的原始报错。
+    #[test]
+    fn agzy_upstream_login_failure_maps_to_friendly_error() {
+        let response: AgzyResponse = serde_json::from_str(
+            r#"{"code":201,"account":"agzycnth004@outlook.com","msg":"登陆失败,请检查账号密码是否正确或者是否被禁用"}"#,
+        )
+        .unwrap();
+        let error = match VersionCatalog::try_from(response) {
+            Err(error) => error,
+            Ok(_) => panic!("应当失败"),
+        };
+        assert_eq!(error.to_string(), "历史版本服务暂时不可用，请稍后重试");
+
+        let response: AgzyResponse = serde_json::from_str(
+            r#"{"code":201,"msg":"此地区暂时未增加获取","count":0,"name":"","time":"暂无数据","data":""}"#,
+        )
+        .unwrap();
+        let error = match VersionCatalog::try_from(response) {
+            Err(error) => error,
+            Ok(_) => panic!("应当失败"),
+        };
+        assert_eq!(error.to_string(), "该应用在此地区暂不支持获取历史版本");
+    }
+
+    #[test]
+    fn empty_catalog_maps_to_friendly_error() {
+        let response: AgzyResponse =
+            serde_json::from_str(r#"{"code":200,"bundleId":"","data":[]}"#).unwrap();
+        let error = match VersionCatalog::try_from(response) {
+            Err(error) => error,
+            Ok(_) => panic!("应当失败"),
+        };
+        assert_eq!(error.to_string(), "该应用暂无历史版本记录");
     }
 
     #[test]

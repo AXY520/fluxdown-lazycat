@@ -26,6 +26,10 @@ pub enum StoreError {
     #[error("响应格式不符合预期: {0}")]
     UnexpectedResponse(String),
 
+    /// 上游服务侧故障/能力限制，内容本身已是面向用户的完整提示，展示时不再加前缀
+    #[error("{0}")]
+    Upstream(String),
+
     #[error("未找到登录账号，请先登录 Apple ID")]
     NoAccount,
 
