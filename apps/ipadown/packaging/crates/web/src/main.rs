@@ -92,6 +92,15 @@ impl ArtworkCache {
     }
 }
 
+/// 搜索结果进程级缓存：key → (写入时刻, 结果)。
+/// 苹果搜索端点按出口 IP 限流（403），重复搜索/多用户共享盒子时避免反复消耗配额。
+type SearchCache = Mutex<HashMap<String, (std::time::Instant, Vec<store::Software>)>>;
+static SEARCH_CACHE: std::sync::OnceLock<SearchCache> = std::sync::OnceLock::new();
+
+fn search_cache() -> &'static SearchCache {
+    SEARCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[derive(Clone)]
 struct AppState {
     public_base_url: Option<String>,
@@ -343,6 +352,21 @@ async fn main() {
         shutdown_signal().await;
         let _ = shutdown_sender.send(true);
     });
+
+    // 苹果边缘节点存在「部分 A 记录在国内网络被 RST」的现像（17.36.x 已两次隔数小时
+    // 复现），而 DNS 可能只返回坏 IP。启动时逐个测试，坏则从公共 DoH 取全量
+    // A 记录找一个可用的 pin 进 /etc/hosts（容器内 root，ipatool/Go 同样读到）。
+    // 整体限时，失败不阻断启动。
+    if let Err(error) = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        store::apple_edge::pin_hosts(),
+    )
+    .await
+    {
+        store::log_warn!("startup", "apple edge pin timed out: {error}");
+    }
+    // 每 10 分钟复检：DNS 轮换出可用 IP 或 pin 失效时自动调整
+    tokio::spawn(store::apple_edge::periodic_recheck());
 
     // 启动时固化配置（确保 keychain_passphrase 等字段落盘，避免每次启动重新生成）
     match store::config::Config::load_or_create() {
@@ -829,15 +853,30 @@ async fn api_search(Query(q): Query<SearchQuery>) -> Response {
     if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_alphabetic()) {
         return err_json(StatusCode::BAD_REQUEST, "非法国家/地区代码");
     }
-    match store::search::search(
-        term,
-        &country,
-        q.limit.unwrap_or(15).clamp(1, 50),
-        q.platform,
-    )
-    .await
+    let limit = q.limit.unwrap_or(15).clamp(1, 50) as usize;
+    // 搜索缓存（10 分钟）：苹果搜索端点按 IP 限流（~20 次/分，403），同一盒子
+    // 多用户/重复搜索不应反复消耗配额
+    let cache_key = format!(
+        "{}:{}:{}:{}",
+        term.to_lowercase(),
+        country,
+        q.platform.ipatool_value(),
+        limit
+    );
     {
-        Ok(results) => Json(results).into_response(),
+        let cache = lock_ignore_poison(search_cache());
+        if let Some((cached_at, results)) = cache.get(&cache_key) {
+            if cached_at.elapsed() < std::time::Duration::from_secs(600) {
+                return Json(results.clone()).into_response();
+            }
+        }
+    }
+    match store::search::search_with_fallback(term, &country, limit, q.platform).await {
+        Ok(results) => {
+            lock_ignore_poison(search_cache())
+                .insert(cache_key, (std::time::Instant::now(), results.clone()));
+            Json(results).into_response()
+        }
         Err(e) => {
             store::log_warn!(
                 "search",

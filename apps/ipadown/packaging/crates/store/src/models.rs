@@ -23,7 +23,7 @@ where
 }
 
 /// 搜索/lookup 返回的 App 信息（字段名对齐 iTunes Search API）
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Software {
     #[serde(rename(deserialize = "trackId", serialize = "id"))]
     pub id: i64,

@@ -3,6 +3,7 @@
 //! 协议实现参考一手源码：
 //! - majd/ipatool (Go): https://github.com/majd/ipatool
 
+pub mod apple_edge;
 pub mod config;
 mod countries;
 mod error;

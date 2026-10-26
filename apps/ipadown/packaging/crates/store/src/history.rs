@@ -54,9 +54,10 @@ struct AgzyResponse {
     data: Vec<AgzyVersion>,
 }
 
-fn flexible_versions<'de, D>(deserializer: D) -> std::result::Result<Vec<AgzyVersion>, D::Error>
+pub(crate) fn flexible_versions<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
 {
     match Option::<serde_json::Value>::deserialize(deserializer)? {
         None | Some(serde_json::Value::Null) | Some(serde_json::Value::String(_)) => Ok(Vec::new()),

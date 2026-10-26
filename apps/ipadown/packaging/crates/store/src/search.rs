@@ -113,6 +113,129 @@ pub async fn lookup_by_id(app_id: i64, country: &str) -> Result<Software> {
         .ok_or_else(|| StoreError::UnexpectedResponse(format!("未找到应用 id{app_id}")))
 }
 
+/// 按多个 App Store ID 批量查找（lookup 端点支持逗号合并，一次请求补全字段）
+async fn lookup_by_ids(app_ids: &[i64], country: &str) -> Result<Vec<Software>> {
+    if app_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = app_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let client = client_follow()?;
+    let resp: SearchResponse = client
+        .get("https://itunes.apple.com/lookup")
+        .query(&[
+            ("id", ids),
+            ("country", country.to_string()),
+            ("entity", "software".to_string()),
+            ("limit", format!("{}", app_ids.len())),
+            ("media", "software".to_string()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(resp.results)
+}
+
+/// 爱果搜索（iTunes search 被限流时的降级源）。
+/// 返回 appId 无 bundleId，需再用 lookup 批量补全（见 search_with_fallback）。
+async fn agzy_search(term: &str, country: &str, limit: usize) -> Result<Vec<i64>> {
+    #[derive(serde::Deserialize)]
+    struct AgzySearchResponse {
+        code: u16,
+        #[serde(default)]
+        msg: String,
+        #[serde(default, deserialize_with = "crate::history::flexible_versions")]
+        data: Vec<AgzySearchApp>,
+    }
+    #[derive(serde::Deserialize)]
+    struct AgzySearchApp {
+        #[serde(rename = "appId")]
+        app_id: i64,
+    }
+    let response: AgzySearchResponse = client_follow()?
+        .post("https://app.agzy.cn/searchApp")
+        .timeout(std::time::Duration::from_secs(20))
+        .header("X-Requested-With", "XMLHttpRequest")
+        .form(&[
+            ("country", country.to_ascii_uppercase()),
+            ("name", term.to_owned()),
+            ("limit", limit.to_string()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    if response.code != 200 {
+        return Err(StoreError::Upstream(format!(
+            "爱果搜索返回 {}：{}",
+            response.code,
+            response.msg.trim()
+        )));
+    }
+    Ok(response.data.into_iter().map(|item| item.app_id).collect())
+}
+
+/// 搜索：iTunes search 优先；被限流（403）或网络失败时降级
+/// 爱果 searchApp 拿 appId 列表 → lookup 批量补全 bundleId 等字段。
+pub async fn search_with_fallback(
+    term: &str,
+    country: &str,
+    limit: usize,
+    platform: DevicePlatform,
+) -> Result<Vec<Software>> {
+    let limit_u32 = u32::try_from(limit).unwrap_or(15);
+    match search(term, country, limit_u32, platform).await {
+        Ok(results) => Ok(results),
+        Err(primary) => {
+            let text = primary.to_string();
+            // 仅在疑似限流/网络故障时降级；参数错误（如词太长）不必
+            let retryable = text.contains("403")
+                || text.contains("404")
+                || text.contains("网络请求失败")
+                || matches!(primary, StoreError::Http(_));
+            if !retryable {
+                return Err(primary);
+            }
+            crate::log_warn!(
+                "search",
+                "itunes search unavailable, falling back to agzy term={term} error={primary}"
+            );
+            let ids = agzy_search(term, country, limit)
+                .await
+                .map_err(|fallback| {
+                    crate::log_warn!(
+                        "search",
+                        "agzy search fallback failed term={term} error={fallback}"
+                    );
+                    StoreError::Upstream("苹果搜索接口被限流，备用搜索也不可用，请稍后再试".into())
+                })?;
+            let results = lookup_by_ids(&ids, country).await.map_err(|fallback| {
+                crate::log_warn!(
+                    "search",
+                    "lookup completion failed term={term} error={fallback}"
+                );
+                StoreError::Upstream("苹果搜索接口被限流，应用信息补全失败，请稍后再试".into())
+            })?;
+            crate::log_info!(
+                "search",
+                "search via agzy fallback term={term} country={country} results={}",
+                results.len()
+            );
+            Ok(results
+                .into_iter()
+                .take(limit)
+                .filter(|app| !app.bundle_id.is_empty())
+                .collect())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DevicePlatform, SearchResponse};
