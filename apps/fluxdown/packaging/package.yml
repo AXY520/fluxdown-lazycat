@@ -1,5 +1,5 @@
 package: cloud.lazycat.app.fluxdown
-version: 0.6.3
+version: 0.6.4
 name: FluxDown
 description: 多协议下载管理器 - Rust 驱动的高速下载引擎，支持 HTTP/HTTPS/FTP/BitTorrent/Magnet/ED2K/HLS
 author: zerx-lab
