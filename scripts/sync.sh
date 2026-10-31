@@ -35,6 +35,9 @@ STATE="$APP_DIR/state.json"
 [ -f "$STATE" ] || die "缺少 $STATE（参照 README 初始化）"
 FORCE="${FORCE:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+# IMAGE_MODE=registry（默认推荐）把镜像复制到懒猫官方仓库、lpk 只引用；
+# IMAGE_MODE=embed 把镜像层内嵌进 lpk（体积大，且依赖构建机 docker 导出可靠）。
+IMAGE_MODE="${IMAGE_MODE:-registry}"
 
 # 导出给 plan.py 的 release 解析配置
 export MARKER_BEGIN="${MARKER_BEGIN:-}"
@@ -110,14 +113,44 @@ publish) ;;
 *) die "未知计划 $ACTION" ;;
 esac
 
-# ── 3. 镜像拉取（存在性校验 + 本地构建依赖；上游 docker 未发布则本轮终止，下轮重试） ──
+# ── 3. 镜像：校验存在（并作为冒烟对象） ──
 if [ -n "${IMAGE_REPO:-}" ]; then
   log "拉取 $IMAGE_REPO:$VERSION"
   docker pull -q "$IMAGE_REPO:$VERSION" >/dev/null \
     || die "镜像 $IMAGE_REPO:$VERSION 拉取失败（上游 docker 构建未完成？）"
-  # 强制把层完整落盘：containerd 存储下按需延后物化的层，在随后的 docker save
-  # 中可能只导出前半段（曾在 CI 上产出过被截断的层，导致盒子上 image load 报
-  # unexpected EOF）。先完整读一遍可显著降低这类偶发。
+fi
+
+# ── 3b. registry 模式：把镜像复制进懒猫官方仓库，lpk 只引用 ──
+# 内嵌模式（embed）依赖构建机 `docker save` 的层完整性：GitHub runner 的
+# docker 28 + BuildKit 曾稳定导出被截断的层，盒子上 `image load` 报
+# `unexpected EOF`，安装失败。registry 模式完全绕开这条链路，且 lpk 从
+# 62MB 降到 1MB（商店官方推荐做法）。
+if [ -n "${IMAGE_REPO:-}" ] && [ "$IMAGE_MODE" = "registry" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    log "DRY_RUN：跳过 copy-image，沿用 manifest 里已有的镜像引用"
+  else
+    log "登录商店账号（copy-image 需要）"
+    lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" \
+      || die "商店登录失败"
+    log "复制镜像到懒猫官方仓库：$IMAGE_REPO:$VERSION"
+    IMAGE_REF="$(lzc-cli appstore copy-image "$IMAGE_REPO:$VERSION" 2>&1 \
+      | grep -oE 'registry\.lazycat\.cloud/[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+' | tail -1)"
+    [ -n "$IMAGE_REF" ] || die "copy-image 未返回官方仓库地址（镜像是否公网可拉取？）"
+    log "官方镜像引用：$IMAGE_REF"
+    python3 - "$APP_DIR/packaging/lzc-manifest.yml" "$IMAGE_REF" <<'PY'
+import re, sys
+path, ref = sys.argv[1], sys.argv[2]
+text = open(path).read()
+new, n = re.subn(r"^(\s*image:\s*)\S+\s*$", lambda m: m.group(1) + ref, text, count=1, flags=re.M)
+if n != 1:
+    raise SystemExit(f"lzc-manifest.yml 里找不到 image: 行，无法写入镜像引用")
+open(path, "w").write(new)
+PY
+  fi
+fi
+
+# ── 3c. embed 模式：构建前预物化镜像层（降低 docker save 截断概率） ──
+if [ -n "${IMAGE_REPO:-}" ] && [ "$IMAGE_MODE" = "embed" ]; then
   log "预物化镜像层（docker save → /dev/null）"
   docker image save "$IMAGE_REPO:$VERSION" > /dev/null || die "镜像层读取失败（存储异常）"
 fi
@@ -125,7 +158,7 @@ fi
 # ── 4. 版本落盘 ──
 log "更新 apps/$APP/packaging 配置到 $VERSION"
 sed -i -E "s/^version: .*/version: $VERSION/" "$APP_DIR/packaging/package.yml"
-if [ -n "${IMAGE_REPO:-}" ]; then
+if [ -n "${IMAGE_REPO:-}" ] && [ "$IMAGE_MODE" = "embed" ]; then
   sed -i -E "s#FROM $IMAGE_REPO:[^[:space:]]*#FROM $IMAGE_REPO:$VERSION#" "$APP_DIR/packaging/lzc-build.yml"
 fi
 grep -q "^version: $VERSION" "$APP_DIR/packaging/package.yml" || die "package.yml 版本写入失败"
@@ -169,8 +202,10 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # ── 8. 发布 ──
-log "登录商店并发布 $PKG_ID $VERSION"
-lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" || die "商店登录失败"
+log "发布 $PKG_ID $VERSION 到商店"
+if [ "$IMAGE_MODE" != "registry" ]; then
+  lzc-cli appstore login -u "$LAZYCAT_APPSTORE_USER" -p "$LAZYCAT_APPSTORE_PASS" || die "商店登录失败"
+fi
 CH_ZH="$(plan_get changelog_zh)"
 CH_EN="$(plan_get changelog_en)"
 PUBLISH_ERR="$(mktemp)"
