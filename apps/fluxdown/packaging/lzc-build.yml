@@ -3,13 +3,6 @@ manifest: ./lzc-manifest.yml
 contentdir: ./content
 pkgout: ./
 icon: ./icon.png
-images:
-  fluxdown:
-    builder: local
-    # 0.5.0 起镜像运行时层已自带 curl / xz-utils / tini（docker/server.Dockerfile），
-    # 不再需要 apt 补装层。
-    dockerfile-content: |
-      FROM ghcr.io/zerx-lab/fluxdown-server:0.6.4
 resource_exports:
   - kind: skills
     source: ./resources/skills

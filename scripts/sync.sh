@@ -101,7 +101,7 @@ json.dump(s, open(p, "w"), ensure_ascii=False, indent=2)
 open(p, "a").write("\n")
 PY
   result "$TAG 无组件变更，跳过"
-  [ "$DRY_RUN" = "1" ] && { git -C "$ROOT" checkout -q -- state.json "apps/$APP" || true; exit 0; }
+  [ "$DRY_RUN" = "1" ] && { git -C "$ROOT" checkout -q -- "$STATE" || true; exit 0; }
   git -C "$ROOT" add "$STATE"
   git -C "$ROOT" -c user.name="github-actions[bot]" \
     -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
@@ -196,8 +196,9 @@ fi
 
 # ── 7. DRY_RUN 到此为止 ──
 if [ "$DRY_RUN" = "1" ]; then
-  log "DRY_RUN：不发布，还原工作区"
-  git -C "$ROOT" checkout -q -- "apps/$APP" || true
+  log "DRY_RUN：不发布，还原脚本改动的文件"
+  git -C "$ROOT" checkout -q -- "$STATE" "$APP_DIR/packaging/package.yml" \
+    "$APP_DIR/packaging/lzc-manifest.yml" "$APP_DIR/packaging/lzc-build.yml" || true
   exit 0
 fi
 
