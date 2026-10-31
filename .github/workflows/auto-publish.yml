@@ -42,6 +42,12 @@ jobs:
       - name: Install lzc-cli
         run: npm install -g @lazycatcloud/lzc-cli
 
+      - name: Runner docker diagnostics
+        run: |
+          docker version --format 'docker server: {{.Server.Version}}'
+          docker info 2>/dev/null | grep -iE "storage driver|snapshotter" || true
+          df -h /var/lib/docker /tmp | tail -3
+
       - name: Sync apps
         run: |
           set -o pipefail

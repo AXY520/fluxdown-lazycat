@@ -115,6 +115,11 @@ if [ -n "${IMAGE_REPO:-}" ]; then
   log "拉取 $IMAGE_REPO:$VERSION"
   docker pull -q "$IMAGE_REPO:$VERSION" >/dev/null \
     || die "镜像 $IMAGE_REPO:$VERSION 拉取失败（上游 docker 构建未完成？）"
+  # 强制把层完整落盘：containerd 存储下按需延后物化的层，在随后的 docker save
+  # 中可能只导出前半段（曾在 CI 上产出过被截断的层，导致盒子上 image load 报
+  # unexpected EOF）。先完整读一遍可显著降低这类偶发。
+  log "预物化镜像层（docker save → /dev/null）"
+  docker image save "$IMAGE_REPO:$VERSION" > /dev/null || die "镜像层读取失败（存储异常）"
 fi
 
 # ── 4. 版本落盘 ──
@@ -125,12 +130,29 @@ if [ -n "${IMAGE_REPO:-}" ]; then
 fi
 grep -q "^version: $VERSION" "$APP_DIR/packaging/package.yml" || die "package.yml 版本写入失败"
 
-# ── 5. 构建 + lint ──
-cd "$APP_DIR/packaging"
+# ── 5. 构建 + lint + 内嵌镜像完整性校验 ──
+build_lpk() {
+  cd "$APP_DIR/packaging"
+  lzc-cli project build -o "$APP_DIR/$PKG_ID-v$VERSION.lpk"
+}
+
 log "lzc-cli 构建 lpk（builder: local）"
-lzc-cli project build -o "$APP_DIR/$PKG_ID-v$VERSION.lpk" || die "lpk 构建失败"
+build_lpk || die "lpk 构建失败"
 LPK="$APP_DIR/$PKG_ID-v$VERSION.lpk"
 lzc-cli lpk lint "$LPK" || die "lpk lint 未通过（商店上架要求检查）"
+
+# `lpk lint` 不检查内嵌镜像层是否完整；截断的层会让商店安装直接失败
+# （盒子上 docker image load 报 unexpected EOF），必须自己把关。
+if ! python3 "$ROOT/scripts/verify_lpk.py" "$LPK"; then
+  log "内嵌镜像校验失败，重新构建一次（排除偶发截断）"
+  build_lpk || die "lpk 重新构建失败"
+  lzc-cli lpk lint "$LPK" >/dev/null || die "lpk lint 未通过（重试）"
+  python3 "$ROOT/scripts/verify_lpk.py" "$LPK" || {
+    log "诊断：docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?')"
+    docker info 2>/dev/null | grep -iE "storage driver|snapshotter" | head -3 >&2 || true
+    die "内嵌镜像两次构建均损坏，已中止发布（不把坏包推给商店）"
+  }
+fi
 
 # ── 6. 冒烟（apps/<应用名>/smoke.sh，可选） ──
 if [ -n "${IMAGE_REPO:-}" ] && [ -f "$APP_DIR/smoke.sh" ]; then
