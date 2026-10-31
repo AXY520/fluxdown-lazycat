@@ -8,7 +8,7 @@
 
 | 应用 | 上游 | 商店包 id | 说明 |
 |---|---|---|---|
-| [fluxdown](apps/fluxdown) | [zerx-lab/FluxDown](https://github.com/zerx-lab/FluxDown) | `cloud.lazycat.app.fluxdown` | 多协议下载管理器（全内嵌 `ghcr.io/zerx-lab/fluxdown-server` 镜像，amd64） |
+| [fluxdown](apps/fluxdown) | [zerx-lab/FluxDown](https://github.com/zerx-lab/FluxDown) | `cloud.lazycat.app.fluxdown` | 多协议下载管理器（镜像经 copy-image 进懒猫官方仓库，lpk 仅引用，~1MB） |
 
 ## 流水线（每 6 小时，或手动 dispatch）
 
@@ -16,10 +16,12 @@
 上游 release（releases/latest，draft / prerelease 忽略）
   ├─ plan.py             组件门控（MARKER_BEGIN 标记的 components 里须含 GATE_COMPONENT
   │                      且 docker=ok，否则只记状态不发布）+ 双语更新日志提取
-  ├─ docker pull         IMAGE_REPO:<版本>（= 存在性校验 + 本地构建依赖）
-  ├─ sed 落版本号        apps/<应用>/packaging/{package.yml,lzc-build.yml}
-  ├─ lzc-cli build       builder: local，lpk 全内嵌镜像（CI 无 lzc-cli 远端构建依赖）
+  ├─ docker pull         IMAGE_REPO:<版本>（存在性校验 + 冒烟对象）
+  ├─ copy-image          镜像复制进 registry.lazycat.cloud，manifest 改写为官方引用
+  ├─ sed 落版本号        apps/<应用>/packaging/package.yml
+  ├─ lzc-cli build       小包（不含镜像层）
   ├─ lpk lint            商店上架要求检查
+  ├─ verify_lpk.py       内嵌镜像完整性校验（embed 模式拦截断层）
   ├─ smoke.sh            应用自定义冒烟（apps/<应用>/smoke.sh，可选）
   ├─ appstore publish    --clangs zh/en 双语更新日志；「版本已存在」自动视为已发布
   └─ state.json          lastSeenTag / publishedVersion 提交回仓库（失败下轮重试）
@@ -27,6 +29,34 @@
 
 多应用**顺序执行**（避免状态提交互相冲突），单应用失败不拖累其他，Run Summary 里有结果表；
 lpk 留档 artifact。
+
+## 镜像交付：registry 优先（重要）
+
+`app.env` 的 `IMAGE_MODE` 决定镜像怎么进包：
+
+| 模式 | 行为 | 何时用 |
+|---|---|---|
+| `registry`（默认） | `lzc-cli appstore copy-image` 把镜像推到 `registry.lazycat.cloud/<账号>/...`，manifest 里 `image:` 直接引用；lpk ≈1MB | 有上游 docker 镜像的应用（商店官方推荐做法） |
+| `embed` | 把镜像层内嵌进 lpk（`images:` + `image: embed:<alias>`），lpk 数十 MB | 镜像无法走官方仓库时 |
+
+**为什么不默认内嵌**：内嵌依赖构建机 `docker save` 导出的层完整性。GitHub runner
+（docker 28.0.4 + BuildKit）曾**稳定**导出被截断的层——manifest 尺寸对、gzip 完整，
+但解压出的 tar 在 1.7MB 处断掉，`lpk lint` 完全看不出来，装到盒子上一启动就
+`docker image load` 报 `unexpected EOF`，安装失败。registry 模式绕开整条链路，
+顺带把每包 62MB 的体积降下来。`scripts/verify_lpk.py` 保留在 embed 模式下把关
+（逐层校验 diff_id + tar 可完整读到 EOF），校验不过会重建一次，仍不过就中止发布，
+绝不把坏包推给商店。
+
+## 更新日志从哪来
+
+`scripts/plan.py` 按优先级提取 release notes：
+
+1. release 里的显式语言标记（`fluxdown:lang:zh` / `fluxdown:lang:en`）
+2. 「`## [版本] - 日期`」版本段（git-cliff 风格）
+3. 兜底全文
+
+提取前会剥掉 HTML 注释与 `<details>` 折叠块——否则会把「下载与安装说明」整段当成
+更新日志推给商店（曾发生过）。
 
 ## 目录结构
 
@@ -70,6 +100,8 @@ FORCE=1 DRY_RUN=1 scripts/sync.sh <应用名>
 ## 注意事项
 
 - **商店审核是人工的**：本流水线自动「提交审核」，不是自动上架。
+- **DRY_RUN 会还原脚本改动的文件**（`package.yml` / `lzc-manifest.yml` / `lzc-build.yml` /
+  `state.json`），本地演练前记得先提交自己的配置改动。
 - **门控组件发布**：release 标记缺 `GATE_COMPONENT`（如 `server`）或 `docker≠ok` → 只记状态
   不发布（无新镜像可打包）。没有标记约定的应用，不设 `MARKER_BEGIN` 即可（全文做更新日志）。
 - **计划任务休眠**：60 天无提交时 GitHub 会停用 schedule；跑一次 dispatch 即恢复。
